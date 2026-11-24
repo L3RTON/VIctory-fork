@@ -234,6 +234,10 @@ struct Lower<'a> {
 // shortcut: a genuine loop of more iterations than this is cut short too.
 pub(super) const LOOP_LIMIT: u32 = 1 << 20;
 
+/// Root UAVs read through a bounded heap view (see `handle`): off, as such
+/// shaders removed the host device.
+const ROOT_UAV_VIA_HEAP: bool = false;
+
 /// Lane masks read as numbers (`s_bcnt1`, `s_ff1`, `v_mbcnt`, scalar
 /// compares, bit tests) are ballots of the lanes' booleans, taken where the
 /// mask is written: structurisation's `active` masks hold only lanes that
@@ -3373,8 +3377,13 @@ impl<'a> Lower<'a> {
                     // writes wherever its offsets point: the host binds it
                     // as a bounded raw view in a heap slot, whose index (x32,
                     // as for tables) its first user-data dword holds.
+                    // Disabled: dispatches of shaders translated this way
+                    // removed the host device (DXGI_ERROR_INVALID_CALL); the
+                    // heap path below is kept for when that is understood.
                     (RootType::Descriptor, Some(ResourceType::Uav), 11 | 0x100b)
-                    | (RootType::Descriptor, Some(ResourceType::Srv) | None, 0x100b) => {
+                    | (RootType::Descriptor, Some(ResourceType::Srv) | None, 0x100b)
+                        if ROOT_UAV_VIA_HEAP =>
+                    {
                         let param = address.param;
                         let key = (self.cur, (usize::MAX, param), 0, false, 0x100b);
                         if let Some(&h) = self.handles.get(&key) {
