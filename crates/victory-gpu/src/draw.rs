@@ -171,6 +171,7 @@ fn root_uav(list: &HostList, address: u64) -> Option<u64> {
         return None;
     }
     let len = shadow.left(address).min(1 << 20);
+    tracing::debug!(address = format_args!("{address:#x}"), left = shadow.left(address), offset = shadow.offset(address), "root UAV");
     shadow.refresh(list, address, len);
     shadow.gpu_writes(list, address, len);
     Some(shadow.gpu(address))
@@ -343,6 +344,44 @@ impl State {
         }
     }
 
+    /// A dynamic slot of the bound view heap made a bounded raw UAV of the
+    /// root view at root parameter `slot`: its index.
+    fn root_uav_slot(&mut self, list: &HostList, compute: bool, slot: u8) -> Option<u32> {
+        let Some(Root::View(address)) = self.roots_ref(compute).get(usize::from(slot)).cloned()
+        else {
+            once!(slot, "a shader writes a root view the title did not set");
+            return None;
+        };
+        let heap = self
+            .heaps
+            .iter()
+            .filter(|&&h| h != 0)
+            .map(|&h| crate::descriptor::heap(h as This))
+            .find(|h| h.host().is_some_and(|x| !x.is_sampler()))?;
+        let host = heap.host()?;
+        let shadow = crate::shadow::find(address, 1)?;
+        // SAFETY: a live buffer.
+        let flags = unsafe { shadow.buffer.GetDesc() }.Flags;
+        if flags.0 & windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS.0 == 0 {
+            once!("a root UAV over a buffer whose host copy shaders cannot write");
+            return None;
+        }
+        let offset = shadow.offset(address);
+        if offset % 4 != 0 {
+            once!(offset, "a root UAV not on a dword of its host copy");
+            return None;
+        }
+        // shortcut: a root view has no size; 4 MiB from its address is what
+        // shaders may touch (copied in, written back, the view's bounds).
+        let len = shadow.left(address).min(4 << 20) & !3;
+        let index = host.dynamic(1)?;
+        self.dynamic.push((std::ptr::from_ref(heap) as usize, index, 1));
+        shadow.refresh(list, address, len);
+        shadow.gpu_writes(list, address, len);
+        host.raw_uav_at(index, &shadow, offset, len);
+        Some(index)
+    }
+
     /// The bound heap holding `handle`.
     fn heap_of(&self, handle: u64) -> Option<&'static crate::descriptor::Heap> {
         self.heaps
@@ -498,6 +537,13 @@ impl State {
                         .find(|m| m.0 == u.slot && u.root == RootType::Table);
                     values[u.index as usize] = match fresh {
                         Some(&(_, offset)) => offset,
+                        // A root UAV, read through a bounded heap view.
+                        None if u.root == RootType::Descriptor => {
+                            match self.root_uav_slot(list, compute, u.slot) {
+                                Some(index) => index * 32,
+                                None => return false,
+                            }
+                        }
                         None => self.user_value(compute, u.slot, u.root, u.dword),
                     };
                 }

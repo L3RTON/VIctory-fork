@@ -108,6 +108,18 @@ impl Shader {
         self.translated
             .get_or_init(|| {
                 let done = translate(&self.container);
+                // Debugging aid: `VICTORY_SHADER_KEEP=<dir>:<hash>,...` keeps
+                // the listed containers, translated or not.
+                if let Ok(spec) = std::env::var("VICTORY_SHADER_KEEP")
+                    && let Some((dir, hashes)) = spec.rsplit_once(':')
+                    && hashes.split(',').any(|h| h == self.hash)
+                {
+                    let _ = std::fs::create_dir_all(dir);
+                    let _ = std::fs::write(
+                        std::path::Path::new(dir).join(format!("{}-{}.bin", self.stage, self.hash)),
+                        &self.container,
+                    );
+                }
                 match &done {
                     Ok(t) => tracing::info!(
                         stage = self.stage,
@@ -251,6 +263,23 @@ fn skipped_shader(p: &Pipeline) -> Option<&str> {
         let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
         parse_skip_hashes(&value)
     });
+    // VICTORY_SKIP_RANGE=<stage>:<lo>-<hi> skips shaders of that stage whose
+    // first hash byte lies in [lo, hi] (hex), to bisect a misbehaving shader.
+    static RANGE: OnceLock<Option<(String, u8, u8)>> = OnceLock::new();
+    let range = RANGE.get_or_init(|| {
+        let v = std::env::var("VICTORY_SKIP_RANGE").ok()?;
+        let (stage, r) = v.split_once(':')?;
+        let (lo, hi) = r.split_once('-')?;
+        Some((stage.to_string(), u8::from_str_radix(lo, 16).ok()?, u8::from_str_radix(hi, 16).ok()?))
+    });
+    if let Some((stage, lo, hi)) = range {
+        if let Some(s) = p.shaders.iter().find(|s| {
+            s.stage == stage
+                && u8::from_str_radix(&s.hash[..2], 16).is_ok_and(|b| (*lo..=*hi).contains(&b))
+        }) {
+            return Some(s.hash.as_str());
+        }
+    }
     if hashes.is_empty() {
         return None;
     }
