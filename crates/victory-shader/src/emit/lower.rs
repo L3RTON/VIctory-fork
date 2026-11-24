@@ -1151,6 +1151,13 @@ impl<'a> Lower<'a> {
             RootType::Constants | RootType::Table => {}
             _ => return Val::Missing("a root descriptor"),
         }
+        self.user_raw(param, dword)
+    }
+
+    /// A user-data dword of any root parameter (a root UAV's is the index
+    /// of the host's heap view of it).
+    fn user_raw(&mut self, param: usize, dword: u32) -> Val {
+        let rp = self.x.native.layout[param];
         let index = u32::from(rp.user_data) + dword;
         self.user_reads.insert(
             index,
@@ -3362,11 +3369,25 @@ impl<'a> Lower<'a> {
                 match (rp.root, kind, props.0) {
                     // A raw buffer the title binds for unordered access:
                     // reads and writes both go through the UAV.
-                    (RootType::Descriptor, Some(ResourceType::Uav), 11 | 0x100b) => {
-                        Ok(self.s.root_uav_handle(rp.slot))
-                    }
-                    (RootType::Descriptor, Some(ResourceType::Srv) | None, 0x100b) => {
-                        Ok(self.s.root_uav_handle(rp.slot))
+                    // A root UAV has no bounds on the host, and the console
+                    // writes wherever its offsets point: the host binds it
+                    // as a bounded raw view in a heap slot, whose index (x32,
+                    // as for tables) its first user-data dword holds.
+                    (RootType::Descriptor, Some(ResourceType::Uav), 11 | 0x100b)
+                    | (RootType::Descriptor, Some(ResourceType::Srv) | None, 0x100b) => {
+                        let param = address.param;
+                        let key = (self.cur, (usize::MAX, param), 0, false, 0x100b);
+                        if let Some(&h) = self.handles.get(&key) {
+                            return Ok(h);
+                        }
+                        let Val::I32(v) = self.user_raw(param, 0) else {
+                            return Err("a root UAV's user data");
+                        };
+                        let shift = self.s.m.i32(5);
+                        let index = self.s.m.bin(self.cur, Bin::LShr, v, shift);
+                        let h = self.s.heap_handle(self.cur, index, false, false, (0x100b, 0));
+                        self.handles.insert(key, h);
+                        Ok(h)
                     }
                     (RootType::Descriptor, Some(ResourceType::Cbv) | None, 13) => {
                         Ok(self.s.root_cbv_handle(rp.slot))

@@ -288,6 +288,41 @@ impl HostHeap {
         self.keep(index, kept.flatten());
     }
 
+    /// Whether this is a sampler heap.
+    pub(crate) fn is_sampler(&self) -> bool {
+        self.sampler
+    }
+
+    /// Makes slot `index` (a dynamic one) a raw unordered access view of
+    /// `len` bytes of `shadow` from `offset` (both multiples of 4): a root
+    /// UAV given bounds, so stray writes are dropped instead of faulting.
+    pub(crate) fn raw_uav_at(&self, index: u32, shadow: &crate::shadow::Shadow, offset: u64, len: u64) {
+        let Some(host) = host() else { return };
+        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_TYPELESS,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: offset / 4,
+                    NumElements: (len / 4) as u32,
+                    StructureByteStride: 0,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAG_RAW,
+                },
+            },
+        };
+        // SAFETY: a live buffer and a slot of our heap.
+        unsafe {
+            host.device.CreateUnorderedAccessView(
+                &shadow.buffer,
+                None::<&ID3D12Resource>,
+                Some(&desc),
+                self.cpu(index),
+            )
+        };
+        self.keep(index, Some(shadow.buffer.clone()));
+    }
+
     /// Makes slot `index` read nothing: a null view, or a plain sampler.
     pub(crate) fn make_null(&self, index: u32) {
         if self.sampler {
