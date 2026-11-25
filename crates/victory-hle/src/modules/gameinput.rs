@@ -115,6 +115,89 @@ trait Source: Send {
     fn rumble(&mut self, slot: usize, low: u16, high: u16);
 }
 
+/// The keyboard's stand-in pad as set up: buttons (virtual key, button)
+/// and the keys of the triggers and stick directions.
+struct Keymap {
+    buttons: Vec<(u8, u32)>,
+    /// Left and right triggers.
+    triggers: [u8; 2],
+    /// Left stick: up, down, left, right; then the right stick's.
+    sticks: [u8; 8],
+}
+
+/// [`FALLBACK_BUTTONS`] and W/A/S/D, I/J/K/L, Z, C, with the changes
+/// `VICTORY_KEYMAP` asks for: `name:key,...`, `key` a virtual-key code
+/// (decimal or `0x` hex), `name` one of menu view a b x y up down left
+/// right lb rb ls rs lt rt move_up move_down move_left move_right look_up
+/// look_down look_left look_right (the launcher's Input tab writes it).
+fn keymap() -> &'static Keymap {
+    static MAP: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = Keymap {
+            buttons: FALLBACK_BUTTONS.to_vec(),
+            triggers: [b'Z', b'C'],
+            sticks: [b'W', b'S', b'A', b'D', b'I', b'K', b'J', b'L'],
+        };
+        let Ok(spec) = std::env::var("VICTORY_KEYMAP") else {
+            return map;
+        };
+        for entry in spec.split(',').filter(|e| !e.trim().is_empty()) {
+            let Some((name, key)) = entry.split_once(':') else { continue };
+            let key = key.trim();
+            let vk = match key.strip_prefix("0x").or_else(|| key.strip_prefix("0X")) {
+                Some(hex) => u8::from_str_radix(hex, 16).ok(),
+                None => key.parse::<u8>().ok(),
+            };
+            let Some(vk) = vk else {
+                tracing::warn!(entry, "VICTORY_KEYMAP: not a virtual-key code");
+                continue;
+            };
+            let button = match name.trim() {
+                "menu" => Some(MENU),
+                "view" => Some(VIEW),
+                "a" => Some(A),
+                "b" => Some(B),
+                "x" => Some(X),
+                "y" => Some(Y),
+                "up" => Some(UP),
+                "down" => Some(DOWN),
+                "left" => Some(LEFT),
+                "right" => Some(RIGHT),
+                "lb" => Some(LEFT_SHOULDER),
+                "rb" => Some(RIGHT_SHOULDER),
+                "ls" => Some(LEFT_STICK),
+                "rs" => Some(RIGHT_STICK),
+                _ => None,
+            };
+            if let Some(bit) = button {
+                map.buttons.retain(|&(_, b)| b != bit);
+                map.buttons.push((vk, bit));
+                continue;
+            }
+            let slot = match name.trim() {
+                "lt" => Some((true, 0)),
+                "rt" => Some((true, 1)),
+                "move_up" => Some((false, 0)),
+                "move_down" => Some((false, 1)),
+                "move_left" => Some((false, 2)),
+                "move_right" => Some((false, 3)),
+                "look_up" => Some((false, 4)),
+                "look_down" => Some((false, 5)),
+                "look_left" => Some((false, 6)),
+                "look_right" => Some((false, 7)),
+                _ => None,
+            };
+            match slot {
+                Some((true, i)) => map.triggers[i] = vk,
+                Some((false, i)) => map.sticks[i] = vk,
+                None => tracing::warn!(entry, "VICTORY_KEYMAP: no such pad control"),
+            }
+        }
+        tracing::info!(spec, "keyboard stand-in pad keys set up");
+        map
+    })
+}
+
 fn fallback(keys: &[KeyState]) -> PadState {
     let on = |vk: u8| {
         if keys.iter().any(|k| k.virtual_key == vk) {
@@ -123,17 +206,20 @@ fn fallback(keys: &[KeyState]) -> PadState {
             0.0
         }
     };
+    let map = keymap();
+    let s = map.sticks;
     PadState {
-        buttons: FALLBACK_BUTTONS
+        buttons: map
+            .buttons
             .iter()
             .filter(|(vk, _)| on(*vk) != 0.0)
             .fold(0, |all, (_, bit)| all | bit),
-        left_trigger: on(b'Z'),
-        right_trigger: on(b'C'),
-        left_x: on(b'D') - on(b'A'),
-        left_y: on(b'W') - on(b'S'),
-        right_x: on(b'L') - on(b'J'),
-        right_y: on(b'I') - on(b'K'),
+        left_trigger: on(map.triggers[0]),
+        right_trigger: on(map.triggers[1]),
+        left_x: on(s[3]) - on(s[2]),
+        left_y: on(s[0]) - on(s[1]),
+        right_x: on(s[7]) - on(s[6]),
+        right_y: on(s[4]) - on(s[5]),
     }
 }
 

@@ -2865,18 +2865,8 @@ impl<'a> Lower<'a> {
     /// `USER_VIEW_ADDRESS`); none for anything else. (The console's
     /// descriptor holds more in the second dword, the stride from bit 16
     /// up; code that takes the address masks those away.)
-    fn view_address(&mut self, site: Site) -> Option<(V, V)> {
-        use super::shader::USER_VIEW_ADDRESS;
-        let (_, slot, dword) = self.table_buffer(site)?;
-        let lo = self.host_word(RootType::Other(USER_VIEW_ADDRESS), slot, dword);
-        let hi = self.host_word(RootType::Other(USER_VIEW_ADDRESS + 1), slot, dword);
-        Some((lo, hi))
-    }
-
-    /// The buffer view (a 4-dword SRV or UAV range of the program's used resources) that a
-    /// descriptor load at a fixed offset of a table reads, with the table's slot and the
-    /// load's dword in the table.
-    fn table_buffer(&self, site: Site) -> Option<(&'a UsedResource, u8, u32)> {
+    fn view_address(&mut self, site: Site) -> Option<(V, V, V)> {
+        use super::shader::{USER_VIEW_ADDRESS, USER_VIEW_RECORDS};
         let a = self.scalar.get(&site).copied()?;
         let rp = *self.x.native.layout.get(a.param)?;
         if rp.root != RootType::Table || a.dynamic.is_some() || a.offset % 32 != 0 {
@@ -2897,7 +2887,10 @@ impl<'a> Lower<'a> {
         if used.dwords != 4 || !matches!(used.kind, ResourceType::Srv | ResourceType::Uav) {
             return None;
         }
-        Some((used, rp.slot, dword))
+        let lo = self.host_word(RootType::Other(USER_VIEW_ADDRESS), rp.slot, dword);
+        let hi = self.host_word(RootType::Other(USER_VIEW_ADDRESS + 1), rp.slot, dword);
+        let records = self.host_word(RootType::Other(USER_VIEW_RECORDS), rp.slot, dword);
+        Some((lo, hi, records))
     }
 
     /// `lo`, `hi` plus the instruction's byte offset `off`, with the carry.
@@ -5920,56 +5913,31 @@ impl<'a> Lower<'a> {
                 self.stale.extend(inst.writes.iter().map(|w| w.1));
                 return Err("a sampler's descriptor read as data");
             }
-            // A buffer view the code reads only for its record count (dword 2), say to skip
-            // the work for a buffer of no elements, and never reads through: the count from
-            // the host view (a raw view counts bytes, the descriptor elements of the used
-            // resource's stride, as for a buffer read below), the address as below, the
-            // other dwords no value.
-            if count == 4
-                && inst.write(Reg::S(code + 2)).is_some()
-                && let Some((used, _, _)) = self.table_buffer(site)
-            {
-                let uav = if used.kind == ResourceType::Uav { 0x1000 } else { 0 };
-                let src = Source::Loaded { load: site, first: 0 };
-                let h = self.handle(site, &src, false, (11 | uav, 0))?;
-                let c = self.cur;
-                let i32t = self.s.t.i32;
-                let dims = self.s.m.named_struct("dx.types.Dimensions", vec![i32t; 4]);
-                let mip = self.s.m.undef(i32t);
-                let d = self.s.op(c, "getDimensions", Attr::ReadOnly, dims, 72, &[h, mip]);
-                let mut n = self.s.m.extract(c, d, 0);
-                if used.stride > 1 {
-                    let k = self.s.m.i32(used.stride);
-                    n = self.s.m.bin(c, Bin::UDiv, n, k);
-                }
-                let address = self.view_address(site);
-                for k in 0..count {
-                    let reg = Reg::S(code + k as u8);
-                    match (k, address) {
-                        (0, Some((lo, _))) => self.write(inst, reg, lo, None),
-                        (1, Some((_, hi))) => self.write(inst, reg, hi, None),
-                        (2, _) => self.write(inst, reg, n, None),
-                        _ => {
-                            if let Some(v) = inst.write(reg) {
-                                self.vals.insert(v, Val::Missing(OTHER));
-                                self.stale.insert(v);
-                            }
-                        }
-                    }
-                }
-                return Ok(());
-            }
             // A buffer view the code only takes the address of, to walk
             // the memory behind it (a ray-tracing structure): the address
             // from the host, the other dwords have no value.
-            if count <= 4
-                && let Some((lo, hi)) = self.view_address(site)
-            {
+            // The same where the code picks the descriptor by an index it
+            // computes: the host's address of the view at that heap slot
+            // (`shader.rs` `SLOT_STRIDES_COUNT`), and its stride where the
+            // console keeps it, in the second dword from bit 16 up.
+            // The slot's table also gives the view's element count (the
+            // console descriptor's third dword), for code that skips an
+            // empty buffer.
+            let at = if count <= 4 {
+                match self.view_address(site) {
+                    Some((lo, hi, n)) => Some((lo, hi, Some(n))),
+                    None => self.slot_address(site)?.map(|(lo, hi, n)| (lo, hi, Some(n))),
+                }
+            } else {
+                None
+            };
+            if let Some((lo, hi, records)) = at {
                 for k in 0..count {
                     let reg = Reg::S(code + k as u8);
-                    match k {
-                        0 => self.write(inst, reg, lo, None),
-                        1 => self.write(inst, reg, hi, None),
+                    match (k, records) {
+                        (0, _) => self.write(inst, reg, lo, None),
+                        (1, _) => self.write(inst, reg, hi, None),
+                        (2, Some(n)) => self.write(inst, reg, n, None),
                         _ => {
                             if let Some(v) = inst.write(reg) {
                                 self.vals.insert(v, Val::Missing(OTHER));
@@ -6104,7 +6072,7 @@ impl<'a> Lower<'a> {
                 });
                 if first == 0
                     && computed
-                    && let Some((lo, hi)) = self.view_address(site)
+                    && let Some((lo, hi, _)) = self.view_address(site)
                 {
                     words.extend([(0, lo), (1, hi)]);
                 }
@@ -6708,6 +6676,89 @@ impl<'a> Lower<'a> {
         let v = self.as_int(f);
         self.strides.insert(key, v);
         Ok(Some(v))
+    }
+
+    /// The title address (low dword; high dword with the view's stride from
+    /// bit 16 up, as the console's descriptor holds them) of the buffer
+    /// view the scalar load at `site` reads from a table or the heap at an
+    /// address that is not fixed, from the host's table of addresses by
+    /// heap slot (`shader.rs` `SLOT_STRIDES_COUNT`); none for a load from
+    /// elsewhere.
+    fn slot_address(&mut self, site: Site) -> Result<Option<(V, V, V)>, Why> {
+        use super::shader::{SLOT_STRIDES, SLOT_STRIDES_COUNT};
+        let Some(a) = self.scalar.get(&site).copied() else {
+            return Ok(None);
+        };
+        match self.x.native.layout.get(a.param).map(|p| p.root) {
+            Some(RootType::Table | RootType::ResourceHeap) => {}
+            _ => return Ok(None),
+        }
+        let c = self.cur;
+        let i32t = self.s.t.i32;
+        let slot = self.heap_index(site, 0, false)?;
+        // Inside the table whatever the index (lanes that do not run
+        // compute one too): a root view has no bounds of its own.
+        let last = self.s.m.i32(SLOT_STRIDES_COUNT - 1);
+        let slot = self.s.op(c, "binary.i32", Attr::ReadNone, i32t, 40, &[slot, last]);
+        self.s.m.tag(slot, Tag::Clamp);
+        let h = self.s.root_srv_handle(SLOT_STRIDES);
+        let iu = self.s.m.undef(i32t);
+        let align = self.s.m.i32(4);
+        let two = self.s.m.i32(2);
+        let three = self.s.m.i32(3);
+        // The stride, at dword `slot`.
+        let byte = self.s.m.bin(c, Bin::Shl, slot, two);
+        let one = self.s.m.i8(1);
+        let r = self.s.op(
+            c,
+            "rawBufferLoad.f32",
+            Attr::ReadOnly,
+            self.s.t.res_ret,
+            139,
+            &[h, byte, iu, one, align],
+        );
+        let f = self.s.m.extract(c, r, 0);
+        let stride = self.as_int(f);
+        // The address, at dwords `SLOT_STRIDES_COUNT + 2 * slot` and on.
+        let base = self.s.m.i32(SLOT_STRIDES_COUNT * 4);
+        let pair = self.s.m.bin(c, Bin::Shl, slot, three);
+        let byte = self.s.m.bin(c, Bin::Add, pair, base);
+        let both = self.s.m.i8(3);
+        let r = self.s.op(
+            c,
+            "rawBufferLoad.f32",
+            Attr::ReadOnly,
+            self.s.t.res_ret,
+            139,
+            &[h, byte, iu, both, align],
+        );
+        let f = self.s.m.extract(c, r, 0);
+        let lo = self.as_int(f);
+        let f = self.s.m.extract(c, r, 1);
+        let hi = self.as_int(f);
+        let low16 = self.s.m.i32(0xFFFF);
+        let hi = self.s.m.bin(c, Bin::And, hi, low16);
+        let s14 = self.s.m.i32(0x3FFF);
+        let stride = self.s.m.bin(c, Bin::And, stride, s14);
+        let k16 = self.s.m.i32(16);
+        let stride = self.s.m.bin(c, Bin::Shl, stride, k16);
+        let hi = self.s.m.bin(c, Bin::Or, hi, stride);
+        // The element count (bytes for a raw view), at dword
+        // `3 * SLOT_STRIDES_COUNT + slot`.
+        let base = self.s.m.i32(SLOT_STRIDES_COUNT * 12);
+        let at = self.s.m.bin(c, Bin::Shl, slot, two);
+        let byte = self.s.m.bin(c, Bin::Add, at, base);
+        let r = self.s.op(
+            c,
+            "rawBufferLoad.f32",
+            Attr::ReadOnly,
+            self.s.t.res_ret,
+            139,
+            &[h, byte, iu, one, align],
+        );
+        let f = self.s.m.extract(c, r, 0);
+        let records = self.as_int(f);
+        Ok(Some((lo, hi, records)))
     }
 
     /// The heap index of a descriptor that may differ between lanes,

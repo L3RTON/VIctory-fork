@@ -24,7 +24,13 @@ pub const ROOT_CBV_SPACE: u32 = 1;
 /// root SRV also tells the host that the buffer views of the whole heap
 /// must be ready when it runs, not only those its tables name.
 pub const SLOT_STRIDES: u8 = 255;
-/// Dwords of the [`SLOT_STRIDES`] buffer: heap indices are clamped to it.
+/// Strides in the [`SLOT_STRIDES`] buffer: heap indices are clamped to it.
+/// After them come two dwords per slot, from dword `SLOT_STRIDES_COUNT +
+/// 2 * i`: the title address (low, high) of the buffer view at heap slot
+/// `i` (0: none), for code that reads a descriptor's address to walk the
+/// memory behind it. Then one dword per slot, from dword
+/// `3 * SLOT_STRIDES_COUNT + i`: the view's element count as the console
+/// descriptor's third dword holds it (bytes for a raw view).
 pub const SLOT_STRIDES_COUNT: u32 = 1 << 21;
 
 /// Title memory by address (`resource::MEMORY`): console code reads and
@@ -69,6 +75,12 @@ pub const USER_VIEW_ADDRESS: u32 = 0x101;
 /// view. Asked for every root UAV, and for the root SRVs of programs with
 /// a spilled user-data table.
 pub const USER_VIEW_BIAS: u32 = 0x103;
+/// `RootType::Other` code of a user-data dword the host computes: the
+/// element count (bytes for a raw view) of the buffer view at dword
+/// `dword` of the descriptor table of root parameter `slot`, as the
+/// console descriptor's third dword holds it (code that skips an empty
+/// buffer reads it).
+pub const USER_VIEW_RECORDS: u32 = 0x104;
 
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {
