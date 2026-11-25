@@ -28,8 +28,15 @@ pub fn run(
     }
 
     let images = cfg.cache_subdir("images")?;
-    victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
+    let shader_cache = cfg.cache_subdir("shaders")?;
+    victory_hle::modules::d3d12x::use_shader_cache(shader_cache.clone());
     let image = victory_loader::load(&prepared, &images)?;
+    // The program is mapped from the copy `load` wrote: the file's bytes
+    // and their patched copy are not read again, and were held for the
+    // whole run (two blocks of 114.7 MB each for Grand Theft Auto VI, in
+    // physical memory: run 65's memory map).
+    drop(prepared);
+    drop(original);
     victory_hle::runtime::set_main_image(image.base());
     victory_hle::runtime::set_image_path(image.base(), exe);
     println!(
@@ -102,6 +109,9 @@ pub fn run(
     }
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
+    // Every shader of the title translated before it starts, behind a
+    // loading window (later runs of the same build skip it).
+    crate::warmup::warm_shaders(title_dir, &shader_cache)?;
     victory_hle::runtime::use_console_timers();
     #[cfg(feature = "diagnostics")]
     diagnostics(&image, &cfg);

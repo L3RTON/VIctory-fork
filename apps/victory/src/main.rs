@@ -8,6 +8,8 @@ mod inspect;
 mod run;
 mod shader;
 mod translate;
+#[cfg(windows)]
+mod warmup;
 
 use std::path::PathBuf;
 
@@ -85,6 +87,26 @@ enum Command {
         #[arg(long)]
         jobs: Option<usize>,
     },
+    /// Translate every shader of a title into the shader cache, as `run
+    /// --execute` does before starting it, without starting it. With
+    /// --only, translate just the shader containers in those files or
+    /// folders and report each (the cache and its marker are untouched by
+    /// failures).
+    Shaders {
+        /// The title's folder (holding its executable and archives).
+        dir: PathBuf,
+        /// Translate again even if a finished pass is recorded.
+        #[arg(long)]
+        force: bool,
+        /// Only these files or folders of containers (e.g. the copies of
+        /// failing ones kept in the cache's `failed` folder).
+        #[arg(long, num_args = 1..)]
+        only: Vec<PathBuf>,
+        /// With --only: also check each translation with dxil.dll's
+        /// validator (translated anew, past the cache).
+        #[arg(long)]
+        validate: bool,
+    },
     /// Prepare, map and bind a title executable; with --execute, run it.
     Run {
         exe: PathBuf,
@@ -152,7 +174,17 @@ fn main() -> Result<()> {
             pipelines,
             list,
             jobs,
-        } => translate::run(paths, validate, pipelines, list, jobs),
+        } => {
+            // `VICTORY_VIEW_LIMIT=<null slot>`: translate as on a host whose view heap is capped
+            if let Some(n) = std::env::var("VICTORY_VIEW_LIMIT").ok().and_then(|v| v.parse().ok()) {
+                victory_shader::emit::set_view_heap_limit(n);
+            }
+            // `VICTORY_HOST_WAVE=32`: translate as for a GPU whose waves are at most 32 lanes
+            if let Some(n) = std::env::var("VICTORY_HOST_WAVE").ok().and_then(|v| v.parse().ok()) {
+                victory_shader::emit::set_host_max_wave(n);
+            }
+            translate::run(paths, validate, pipelines, list, jobs)
+        }
         Command::Run {
             exe,
             unimplemented,
@@ -161,6 +193,24 @@ fn main() -> Result<()> {
             console,
             title_args: _,
         } => run::run(&exe, unimplemented, strict, execute, console),
+        #[cfg(windows)]
+        Command::Shaders {
+            dir,
+            force,
+            only,
+            validate,
+        } => {
+            let cfg = victory_core::Config::load()?;
+            let cache = cfg.cache_subdir("shaders")?;
+            victory_gpu::shader_cache::use_shader_cache(cache.clone());
+            if only.is_empty() {
+                warmup::warm_shaders_with(&dir, &cache, force)
+            } else {
+                warmup::check(&only, &cache, validate)
+            }
+        }
+        #[cfg(not(windows))]
+        Command::Shaders { .. } => anyhow::bail!("needs Windows"),
         Command::Config => show_config(),
     }
 }
