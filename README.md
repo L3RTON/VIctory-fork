@@ -1,4 +1,4 @@
-# VIctorY
+# VIctory-fork
 
 Runs Xbox Games (Xbox Series X|S) natively on Windows, from files
 the user supplies.
