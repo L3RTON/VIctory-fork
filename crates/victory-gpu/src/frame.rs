@@ -49,11 +49,12 @@ pub(crate) extern "system" fn set_interval(
     _period: u32,
     _flags: u32,
 ) -> HRESULT {
-    let interval = match length {
+    let asked = match length {
         0 => SIXTIETH,
         us => Duration::from_micros(u64::from(us)),
     };
-    tracing::info!(?interval, "frame interval");
+    let interval = limit().unwrap_or(asked);
+    tracing::info!(?asked, ?interval, "frame interval");
     // A new interval starts from now, after the last tick handed out.
     let first = LAST
         .iter()
@@ -67,6 +68,30 @@ pub(crate) extern "system" fn set_interval(
     });
     S_OK
 }
+
+/// The frame interval used instead of the title's: by default none to
+/// speak of (frames as fast as they are made, instead of the title's 30 a
+/// second); `VICTORY_FPS_LIMIT=<n>` caps at n frames a second,
+/// `VICTORY_FPS_LIMIT=title` keeps the title's own pacing (`None`).
+fn limit() -> Option<Duration> {
+    if cfg!(test) {
+        return None;
+    }
+    static LIMIT: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let value = std::env::var("VICTORY_FPS_LIMIT").unwrap_or_default();
+        match value.trim() {
+            "title" => None,
+            v => match v.parse::<f64>() {
+                Ok(fps) if fps > 0.0 => Some(Duration::from_secs_f64(1.0 / fps)),
+                _ => Some(UNCAPPED),
+            },
+        }
+    })
+}
+
+/// The uncapped frame interval: waits end at once.
+const UNCAPPED: Duration = Duration::from_micros(1);
 
 /// Device method: events are scheduled at every tick.
 pub(crate) extern "system" fn schedule(
@@ -99,7 +124,7 @@ fn next_tick(kind: u32) -> (u64, Duration) {
     let mut clock = clock();
     let c = clock.get_or_insert_with(|| Clock {
         start: Instant::now(),
-        interval: SIXTIETH,
+        interval: limit().unwrap_or(SIXTIETH),
         first: 0,
     });
     let elapsed = c.start.elapsed().as_nanos();
@@ -126,8 +151,22 @@ pub(crate) extern "system" fn wait(
     token: *mut u64,
 ) -> HRESULT {
     let origin = kind == ORIGIN;
-    let (tick, wait) = next_tick(kind);
+    let (mut tick, mut wait) = next_tick(kind);
     let limit = Duration::from_millis(u64::from(timeout_ms));
+    // A blocking wait for an event that has happened since the last wait
+    // for it ended (a frame took longer than a tick) ends at once, on the
+    // tick that passed: sleeping on to the next one cost 17 ms of every
+    // 730 ms frame (run 58: "2.0 frame waits sleeping 16.8 ms"). Polls (a
+    // time-out shorter than a tick) answer as before.
+    // `VICTORY_LATE_WAITS=1` sleeps to the next tick, as before.
+    static SLEEP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*SLEEP.get_or_init(|| std::env::var_os("VICTORY_LATE_WAITS").is_some_and(|v| v == "1"))
+        && limit >= wait
+        && tick > last(kind).load(Ordering::Relaxed) + 1
+    {
+        tick -= 1;
+        wait = Duration::ZERO;
+    }
     let hr = if wait > limit {
         std::thread::sleep(limit);
         TIMEOUT
@@ -136,6 +175,12 @@ pub(crate) extern "system" fn wait(
         last(kind).fetch_max(tick, Ordering::Relaxed);
         S_OK
     };
+    #[cfg(all(windows, feature = "diagnostics"))]
+    {
+        use crate::copystat::{C, add};
+        add(C::PaceWaits, 1);
+        add(C::PaceUs, wait.min(limit).as_micros() as u64);
+    }
     // A frame begun on a time-out takes no tick: its flip still does.
     if origin && (hr == S_OK || flags & TOKEN_ON_TIMEOUT != 0) {
         // Tokens count frames (consecutive), not ticks.

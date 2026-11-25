@@ -116,24 +116,6 @@ pub extern "system" fn CreateWindowExA(
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).
 fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
-    // The window is the display: 1920x1080 unless `VICTORY_DISPLAY=WxH`
-    // says otherwise (the swap chain stretches the title's frames to it).
-    let (width, height) = if parent.is_null() && width > 0 && height > 0 {
-        let size = std::env::var("VICTORY_DISPLAY")
-            .ok()
-            .and_then(|v| {
-                let (w, h) = v.split_once(['x', 'X'])?;
-                Some((w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?))
-            })
-            .filter(|&(w, h)| w > 0 && h > 0)
-            .unwrap_or((1920, 1080));
-        if size != (width, height) {
-            tracing::info!(width, height, to = ?size, "title window sized to the display");
-        }
-        size
-    } else {
-        (width, height)
-    };
     let mut area = RECT::default();
     // SAFETY: `area` receives the primary monitor's work area.
     let known =

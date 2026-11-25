@@ -7,14 +7,31 @@
 
 use std::collections::HashMap;
 
+pub mod census;
+pub mod opt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct Ty(u32);
+
+/// What the lowering made an instruction for, where it says so (counted by
+/// [`census`], nothing else reads it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tag {
+    /// The select that keeps a register's old value in lanes a guard masks.
+    Guard,
+    /// An index clamp the translation adds (the console has none).
+    Clamp,
+    /// The iteration counter and limit test the translation adds to a loop.
+    Counter,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TypeDef {
     Void,
     Int(u32),
     Float,
+    /// A 64-bit float.
+    Double,
     /// Pointee and address space.
     Ptr(Ty, u32),
     Struct(Option<String>, Vec<Ty>),
@@ -47,6 +64,8 @@ struct Global {
 enum Const {
     Int(i64),
     Float(u32),
+    /// A 64-bit float's bits.
+    Double(u64),
     Undef,
     Aggregate(Vec<u32>),
 }
@@ -92,6 +111,7 @@ pub(crate) enum Cast {
     FpToSi = 4,
     UiToFp = 5,
     SiToFp = 6,
+    FpTrunc = 7,
     Bitcast = 11,
 }
 
@@ -208,6 +228,8 @@ pub(crate) struct Module {
     blocks: Vec<Block>,
     mds: Vec<MdDef>,
     named: Vec<(String, Vec<Md>)>,
+    /// See [`Tag`]: by instruction.
+    tags: HashMap<u32, Tag>,
 }
 
 impl Module {
@@ -229,6 +251,9 @@ impl Module {
     }
     pub fn float(&mut self) -> Ty {
         self.ty(TypeDef::Float)
+    }
+    pub fn double(&mut self) -> Ty {
+        self.ty(TypeDef::Double)
     }
     pub fn ptr(&mut self, to: Ty) -> Ty {
         self.ty(TypeDef::Ptr(to, 0))
@@ -278,6 +303,10 @@ impl Module {
     pub fn f32(&mut self, bits: u32) -> V {
         let t = self.float();
         self.constant(t, Const::Float(bits))
+    }
+    pub fn f64(&mut self, bits: u64) -> V {
+        let t = self.double();
+        self.constant(t, Const::Double(bits))
     }
     pub fn undef(&mut self, ty: Ty) -> V {
         self.constant(ty, Const::Undef)
@@ -353,6 +382,16 @@ impl Module {
             self.globals[n as usize].init = Some(i);
         }
         g
+    }
+
+    /// Notes what instruction `v` is for (see [`Tag`]); only when modules
+    /// are counted.
+    pub fn tag(&mut self, v: V, tag: Tag) {
+        if let V::Inst(i) = v
+            && census::enabled()
+        {
+            self.tags.insert(i, tag);
+        }
     }
 
     pub fn new_block(&mut self) -> usize {
@@ -551,6 +590,7 @@ impl Module {
             match t {
                 TypeDef::Void => w.record(2, &[]),
                 TypeDef::Float => w.record(3, &[]),
+                TypeDef::Double => w.record(4, &[]),
                 TypeDef::Int(b) => w.record(7, &[u64::from(*b)]),
                 TypeDef::Ptr(p, space) => w.record(8, &[u64::from(p.0), u64::from(*space)]),
                 TypeDef::Array(n, e) => w.record(11, &[u64::from(*n), u64::from(e.0)]),
@@ -642,6 +682,7 @@ impl Module {
                 Const::Undef => w.record(3, &[]),
                 Const::Int(v) => w.record(4, &[signed(*v)]),
                 Const::Float(bits) => w.record(6, &[u64::from(*bits)]),
+                Const::Double(bits) => w.record(6, &[*bits]),
                 Const::Aggregate(ids) => {
                     let r: Vec<u64> = ids.iter().map(|&i| const_id(i)).collect();
                     w.record(7, &r);
