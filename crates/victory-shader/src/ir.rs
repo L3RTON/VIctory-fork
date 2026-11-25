@@ -294,14 +294,33 @@ fn unspill(
         };
         let mut codes = Vec::new();
         let mut reading = Vec::new();
-        // `v_movrels_b32 vD, vB`: reads v[B + M0], which `effects` names as every VGPR
-        // from B up.
-        let relative = match (&fields, name) {
-            (Fields::Valu(v), "v_movrels_b32") => match v.src.first() {
-                Some(&Operand::Vector { reg, .. }) => Some(reg),
-                _ => None,
-            },
+        // An M0-relative access names every VGPR from its base up (`effects`);
+        // the ones past the base are reached by the index alone. Those do not
+        // make a VGPR of parked scalars anything else: the compiler allocates
+        // an indexed array as one block of its own, apart from the VGPRs it
+        // parks scalars in.
+        // shortcut: an index past the array's end (undefined in HLSL) that
+        // would land on a parked VGPR reads nothing parked there.
+        let indexed_base: Option<u8> = match (&fields, name) {
+            (Fields::Valu(v), n) if n.starts_with("v_movrel") || n == "v_swaprel_b32" => {
+                v.src.first().into_iter().chain(v.dst.iter()).find_map(|o| match *o {
+                    Operand::Vector { reg, .. } => Some(reg),
+                    _ => None,
+                })
+            }
             _ => None,
+        };
+        let explicit: Vec<u8> = match &fields {
+            Fields::Valu(v) => v
+                .src
+                .iter()
+                .chain(v.dst.iter())
+                .filter_map(|o| match *o {
+                    Operand::Vector { reg, .. } => Some(reg),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
         };
         if let Some((reads, writes)) = effects {
             for &reg in &writes {
@@ -318,11 +337,13 @@ fn unspill(
                 match reg {
                     Reg::S(c) => used[usize::from(c)] = true,
                     Reg::V(r) if park.is_some_and(|p| p.1 == r) => stores[usize::from(r)] = true,
-                    // (past the base of a read relative to M0: the array the compiler
-                    // indexes, not a VGPR it parks scalars in, which it does not lay out
-                    // among an array's registers)
-                    Reg::V(r) if relative.is_some_and(|base| r > base) => {}
-                    Reg::V(r) => other[usize::from(r)] = true,
+                    Reg::V(r) if indexed_base.is_some_and(|b| r > b) && !explicit.contains(&r) => {}
+                    Reg::V(r) => {
+                        if !other[usize::from(r)] && std::env::var_os("VICTORY_UNSPILL_WHY").is_some() {
+                            eprintln!("UNSPILL: v{r} used by {name} at {:#x}", inst.offset);
+                        }
+                        other[usize::from(r)] = true;
+                    }
                     Reg::Scc => {}
                 }
             }

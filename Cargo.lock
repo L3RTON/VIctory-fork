@@ -683,7 +683,7 @@ name = "victory-game"
 version = "0.1.0"
 dependencies = [
  "memchr",
- "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -692,7 +692,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "miniz_oxide",
  "tempfile",
  "tracing",
  "victory-formats",
@@ -700,13 +699,13 @@ dependencies = [
  "victory-shader",
  "windows",
  "windows-sys",
+ "zlib-rs",
 ]
 
 [[package]]
 name = "victory-hle"
 version = "0.1.0"
 dependencies = [
- "miniz_oxide",
  "opus-pure",
  "tempfile",
  "tracing",
@@ -717,6 +716,7 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-sys",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -914,3 +914,9 @@ dependencies = [
  "clap",
  "walkdir",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa76918995d776d9dd34d371030be228d021137449771493d56e29f77e4148ac"

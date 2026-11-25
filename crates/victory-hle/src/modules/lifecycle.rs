@@ -73,7 +73,7 @@ pub extern "system" fn CreateWindowExW(
     instance: HINSTANCE,
     param: *const c_void,
 ) -> HWND {
-    let (x, y, width, height) = fit(parent, x, y, width, height);
+    let (x, y, width, height, style) = fit(parent, x, y, width, height, style);
     // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExW(
@@ -99,7 +99,7 @@ pub extern "system" fn CreateWindowExA(
     instance: HINSTANCE,
     param: *const c_void,
 ) -> HWND {
-    let (x, y, width, height) = fit(parent, x, y, width, height);
+    let (x, y, width, height, style) = fit(parent, x, y, width, height, style);
     // SAFETY: the title's own arguments, forwarded (the size fitted).
     let hwnd = unsafe {
         wm::CreateWindowExA(
@@ -115,20 +115,69 @@ pub extern "system" fn CreateWindowExA(
 /// A top-level window larger than the work area is shrunk to fit, keeping
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).
-fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
-    let mut area = RECT::default();
-    // SAFETY: `area` receives the primary monitor's work area.
-    let known =
-        unsafe { wm::SystemParametersInfoW(wm::SPI_GETWORKAREA, 0, (&raw mut area).cast(), 0) };
-    let fitted = fit_into(&area, width, height);
-    if !parent.is_null() || known == 0 || fitted == (width, height) {
-        return (x, y, width, height);
+fn fit(
+    parent: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    style: u32,
+) -> (i32, i32, i32, i32, u32) {
+    if !parent.is_null() {
+        return (x, y, width, height, style);
     }
-    tracing::info!(width, height, to = ?fitted, "title window fitted to the screen");
+    let picked = std::env::var("VICTORY_MONITOR").ok().and_then(|v| v.trim().parse::<usize>().ok());
+    let Some((whole, work)) = monitor_areas(picked) else {
+        return (x, y, width, height, style);
+    };
+    // `VICTORY_WINDOWED=0`: a borderless window over the whole monitor.
+    if std::env::var_os("VICTORY_WINDOWED").is_some_and(|v| v == "0") {
+        let framed = wm::WS_CAPTION | wm::WS_THICKFRAME | wm::WS_SYSMENU | wm::WS_MINIMIZEBOX | wm::WS_MAXIMIZEBOX;
+        let style = (style & !framed) | wm::WS_POPUP;
+        let (w, h) = (whole.right - whole.left, whole.bottom - whole.top);
+        tracing::info!(monitor = ?picked, w, h, "title window covers the whole monitor");
+        return (whole.left, whole.top, w, h, style);
+    }
+    let fitted = fit_into(&work, width, height);
+    if fitted == (width, height) && picked.is_none() {
+        return (x, y, width, height, style);
+    }
+    tracing::info!(width, height, to = ?fitted, monitor = ?picked, "title window fitted to the screen");
     let (w, h) = fitted;
-    let left = area.left + (area.right - area.left - w) / 2;
-    let top = area.top + (area.bottom - area.top - h) / 2;
-    (left, top, w, h)
+    let left = work.left + (work.right - work.left - w) / 2;
+    let top = work.top + (work.bottom - work.top - h) / 2;
+    (left, top, w, h, style)
+}
+
+/// The whole area and the work area of monitor `picked` (1 the first
+/// Windows lists, `VICTORY_MONITOR`), or of the primary monitor.
+fn monitor_areas(picked: Option<usize>) -> Option<(RECT, RECT)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+        MonitorFromPoint,
+    };
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> windows_sys::core::BOOL {
+        // SAFETY: the vector `monitor_areas` passes.
+        unsafe { (*(list as *mut Vec<HMONITOR>)).push(m) };
+        1
+    }
+    let mut list: Vec<HMONITOR> = Vec::new();
+    // SAFETY: the callback only pushes to `list`, which outlives the call.
+    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), (&raw mut list) as LPARAM) };
+    let monitor = match picked.and_then(|n| n.checked_sub(1)).and_then(|i| list.get(i)) {
+        Some(&m) => m,
+        // SAFETY: plain query.
+        None => unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) },
+    };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        rcMonitor: RECT::default(),
+        rcWork: RECT::default(),
+        dwFlags: 0,
+    };
+    // SAFETY: a monitor handle and a sized structure.
+    (unsafe { GetMonitorInfoW(monitor, &raw mut info) } != 0).then_some((info.rcMonitor, info.rcWork))
 }
 
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits

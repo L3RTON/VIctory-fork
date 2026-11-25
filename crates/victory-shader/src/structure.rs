@@ -960,6 +960,18 @@ impl<'a> Lanes<'a> {
             .collect();
         let id = lo.map_or(k.1, |_| k.0);
         let mut derived = self.derived_phis.contains(&id);
+        // A register the console compiler holds a mask in on one path and a
+        // number it loads from memory on another (it reuses SGPRs freely)
+        // is not a lane mask where the paths meet: the code past the join
+        // reads it as a number (shader dbdbf36298727135: `s27`, a mask in
+        // two loops, a constant buffer dword past them).
+        let loaded = |v: Value| {
+            self.defs.get(&v).is_some_and(|&(b, i)| {
+                let n = p.blocks[b].insts[i].name();
+                n.starts_with("s_load_") || n.starts_with("s_buffer_load_")
+            })
+        };
+        let data = args.iter().any(|a| loaded(a.0) || loaded(a.1));
         // (edge condition, mask) per forward edge; back edges come later.
         let mut forward = Vec::new();
         for (n, &a) in args.iter().enumerate() {
@@ -972,6 +984,9 @@ impl<'a> Lanes<'a> {
             } else {
                 self.seen.push(a);
             }
+        }
+        if data && std::env::var_os("VICTORY_MIXED_PHI_MASKS").is_none() {
+            derived = false;
         }
         if forward.len() == args.len()
             && let Some(&(_, m)) = forward.first()
@@ -1191,7 +1206,9 @@ impl<'a> Lanes<'a> {
                         && let Some(k) = self.key(|r| inst.read(r), code)
                     {
                         let phi = self.phis.contains_key(&k.0) || self.phis.contains_key(&k.1);
-                        takes_mask |= self.masks.contains_key(&k) || phi && self.mask(k).1;
+                        let known = self.masks.contains_key(&k);
+                        let by_phi = !known && phi && self.mask(k).1;
+                        takes_mask |= known || by_phi;
                     }
                 }
                 let touches_exec =

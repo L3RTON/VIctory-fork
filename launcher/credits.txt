@@ -1,0 +1,16 @@
+VIctory - Xbox Series X compatibility layer for PC
+
+DEVELOPMENT
+  (name)
+  (name)
+
+SHADERS AND GRAPHICS
+  (name)
+
+TESTING
+  (name)
+
+THANKS
+  (name)
+
+Edit credits.txt next to Launcher.exe to change this text.

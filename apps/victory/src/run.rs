@@ -19,6 +19,11 @@ pub fn run(
     // A title that relaunched itself: the old process must be gone first.
     victory_hle::modules::lifecycle::wait_for_previous();
     let cfg = victory_core::Config::load()?;
+    // Before the import registry is first used: it holds the module only
+    // when the host's FidelityFX (`VICTORY_FIDELITYFX_DIR`, the folder with
+    // the PC SDK's `amd_fidelityfx_upscaler_dx12.dll`) serves the title's.
+    let fidelityfx = std::env::var_os("VICTORY_FIDELITYFX_DIR").map(std::path::PathBuf::from);
+    victory_hle::modules::fidelityfx::use_host_dir(fidelityfx.as_deref());
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
     let prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();
