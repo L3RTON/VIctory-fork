@@ -11,19 +11,18 @@ or publisher.
 
 ## Where it stands (2026-11-25)
 
-Tested on one machine only: Windows 11, Intel i9-12900K, 64 GB RAM, Radeon
-RX 7900 XTX, 1440p, the Series X profile.
+Tested on one machine only: Windows 11, Intel i9-12900K, 32 GB RAM DDR4, Nvidia 4070 Super, 1440p, the Series X profile.
 
 | | |
 |---|---|
 | Menus, videos, loading screens | 30 fps |
 | Prologue, indoors | 50-75 ms a frame (13-20 fps) |
-| First mission with the boat | 46-53 ms (19-22 fps) |
-| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |
-| Outdoors on foot, the camp | 60-90 ms |
-| Flying | 42-57 ms |
-| Longest session so far | 41 minutes, no crash |
-| Memory | 40-46 GB of private memory: **64 GB of RAM recommended** |
+<s>| First mission with the boat | 46-53 ms (19-22 fps) |</s>
+<s>| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |<s>
+<s>| Outdoors on foot, the camp | 60-90 ms |<s>
+<s>| Flying | 42-57 ms |<s>
+| Longest session so far | 18 minutes, no crash |
+| Memory | 27-29 GB of private memory: **64 GB of RAM recommended** |
 
 It started at 280 ms a frame in the same scenes two days earlier.
 
@@ -94,7 +93,7 @@ commits taken from elsewhere name the commit and its author.
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors: the loader, the runtime services, the Direct3D 12 back end and
   the shader recompiler.
-- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)**: the fork
+- **[VIctory-7900XTX](https://github.com/DexNom/VIctory)** by DexNom. the fork
   this one started from, and the people whose pull requests it carries.
 - **[DexNom/VIctory](https://github.com/DexNom/VIctory)**: ray tracing fixes,
   cube gradients, sparse textures.
