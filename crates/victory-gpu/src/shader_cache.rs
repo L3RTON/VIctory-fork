@@ -1,9 +1,7 @@
 //! Translated shaders kept on disk (decision 0003): under the configured
 //! cache folder, keyed by the container's content and by the translator
-//! that translated it (a hash of its sources taken at build time, with the
-//! switches and host properties a translation depends on), so a rebuilt
-//! translator never serves an old translation, while a rebuild that leaves
-//! the translator alone keeps every entry. Entries go through
+//! (the BLAKE3 of its sources) and its settings, so a changed translator
+//! never serves an old translation. Entries go through
 //! `victory-pipeline`'s content-addressed cache, which writes them
 //! atomically; an entry that does not read back is translated again.
 //!
@@ -39,18 +37,16 @@ pub(crate) fn counts() -> (u64, u64) {
     (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
 }
 
-/// What identifies a translation besides its container: the translator's
-/// sources (hashed when this crate is built, `build.rs`: a rebuild that
-/// leaves the translator alone keeps the cache), the switches that change
-/// what it emits, and what it takes from the host GPU (the widest wave,
-/// a capped view heap's null slot), read at each call since the GPU is
-/// probed after the cache is opened.
+/// What identifies a translation beside its container: the translator
+/// (the BLAKE3 of its sources, `build.rs`), the settings it runs with, and
+/// what it was told of the host. Not our executable: a rebuild of anything
+/// else used to translate every shader again.
 fn build() -> [u8; 32] {
+    // The view heap's null slot differs by host GPU: a translation cached
+    // without the clamp must not be served (`host_settings` below).
+    crate::descriptor::host::probe_view_limit();
     static FIXED: OnceLock<Vec<u8>> = OnceLock::new();
     let fixed = FIXED.get_or_init(|| {
-        // (not whether the translator has its debugging switches: they change
-        // nothing but the loop limit, which is below)
-        let mut bytes = env!("VICTORY_TRANSLATOR_SOURCES").as_bytes().to_vec();
         let limit = victory_shader::emit::loop_limit();
         if limit != victory_shader::emit::DEFAULT_LOOP_LIMIT {
             tracing::warn!(
@@ -58,20 +54,29 @@ fn build() -> [u8; 32] {
                 "VICTORY_SHADER_LOOP_LIMIT: translated loops stop sooner"
             );
         }
+        let mut bytes = env!("VICTORY_TRANSLATOR").as_bytes().to_vec();
         bytes.extend_from_slice(&limit.to_le_bytes());
         // Which group barriers wait is part of the translation too.
         bytes.push(victory_shader::emit::group_sync());
-        // So are the switches that pick the form of a program (without them
-        // here a run with `VICTORY_WAVE_WIDE=0` was served the translations
-        // an earlier run had cached with the switch unset).
+        // So are the switches that pick the form of a wave64 program:
+        // without them here a run with `VICTORY_WAVE_WIDE=0` was
+        // served the translations an earlier run of the same
+        // executable had cached with the switch unset.
         for name in [
             "VICTORY_WAVE_WIDE",
             "VICTORY_WAVE_DEEP_SKIPS",
             "VICTORY_WAVE_OWN_BITS",
             "VICTORY_WAVE_LOCAL",
+            "VICTORY_LDS_LOOSE",
+            "VICTORY_CBV_SPLIT",
             "VICTORY_F16_NEAREST",
+            "VICTORY_HELPER_OWN",
+            "VICTORY_FIRSTLANE_OWN",
+            "VICTORY_FIRST_HALF",
             "VICTORY_STRICT_JOINS",
             "VICTORY_MESH_OUTPUT_STRICT",
+            "VICTORY_BVH_FENCES",
+            "VICTORY_BVH_BOUNDS",
         ] {
             bytes.extend_from_slice(name.as_bytes());
             bytes.push(b'=');
@@ -84,10 +89,29 @@ fn build() -> [u8; 32] {
         bytes.extend_from_slice(&victory_shader::emit::shader_opt().to_le_bytes());
         bytes
     });
-    let mut bytes = fixed.clone();
-    bytes.extend_from_slice(&victory_shader::emit::host_wave_lanes().to_le_bytes());
-    bytes.extend_from_slice(&victory_shader::emit::view_heap_limit().to_le_bytes());
-    *blake3::hash(&bytes).as_bytes()
+    let mut hash = blake3::Hasher::new();
+    hash.update(fixed);
+    for value in victory_shader::emit::host_settings() {
+        hash.update(&value.to_le_bytes());
+    }
+    *hash.finalize().as_bytes()
+}
+
+/// What tells one set of translations from another ([`build`]).
+pub(crate) fn translation() -> [u8; 32] {
+    build()
+}
+
+/// Puts the translation of `container` into the cache before any title asks
+/// for it (`victory shaders`): whether it was there already, or why it does
+/// not translate. The host is opened first, as a run does: what the card
+/// can do decides the form of some programs.
+pub fn precompile(container: &[u8]) -> Result<bool, String> {
+    let _ = crate::host::host();
+    let misses = MISSES.load(Ordering::Relaxed);
+    host_shader(container)?;
+    // (Counts other threads' misses too: the caller only adds them up.)
+    Ok(MISSES.load(Ordering::Relaxed) == misses)
 }
 
 /// The translation of a console shader container, from the cache when
@@ -98,38 +122,6 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
         Some(cache) => cached(cache, &build(), container, translate),
         None => translate(container),
     }
-}
-
-/// Before shaders are translated ahead of the title's run: the host device
-/// is made, so that what the translation takes from it (the widest wave,
-/// a capped view heap's index clamp) is what the title's run translates
-/// with. `false` without a host device.
-pub fn prepare_warm() -> bool {
-    if crate::host::host().is_none() {
-        return false;
-    }
-    crate::descriptor::host::probe_view_limit();
-    true
-}
-
-/// Translates `container` into the cache ahead of the title's run (call
-/// [`prepare_warm`] first, with the cache in use): `Ok(true)` if it was
-/// there already.
-pub fn warm(container: &[u8]) -> Result<bool, String> {
-    LAST_HIT.set(false);
-    host_shader(container)?;
-    Ok(LAST_HIT.get())
-}
-
-thread_local! {
-    /// Whether this thread's last cached translation was a hit.
-    static LAST_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// The cache key of this run's translations, short and in hex: names what
-/// a cache folder holds for it.
-pub fn cache_key() -> String {
-    blake3::Hash::from(build()).to_hex()[..16].to_owned()
 }
 
 /// The cache entry's converter: the build and the container in, the
@@ -173,7 +165,6 @@ fn cached(
             let (counter, what) = if converter.ran.load(Ordering::Relaxed) {
                 (&MISSES, "translated and cached")
             } else {
-                LAST_HIT.set(true);
                 (&HITS, "from the cache")
             };
             counter.fetch_add(1, Ordering::Relaxed);

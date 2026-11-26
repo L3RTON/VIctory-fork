@@ -792,6 +792,9 @@ impl<'a> Lanes<'a> {
             .iter()
             .enumerate()
             .map(|(n, block)| {
+                // Reachability is fixed within the block. Vector instructions
+                // with the same EXEC therefore need the same guard.
+                let mut last_guard = None;
                 block
                     .insts
                     .iter()
@@ -801,8 +804,16 @@ impl<'a> Lanes<'a> {
                         | (_, Fields::Sop { .. } | Fields::Sopp { .. } | Fields::Smem { .. }) => {
                             None
                         }
-                        (&Some(e), _) if b.implies(cond[n], e) => None,
-                        (&Some(e), _) => Some(b.given(e, cond[n])),
+                        (&Some(e), _) => {
+                            if let Some((prev, guard)) = last_guard
+                                && prev == e
+                            {
+                                return guard;
+                            }
+                            let guard = (!b.implies(cond[n], e)).then(|| b.given(e, cond[n]));
+                            last_guard = Some((e, guard));
+                            guard
+                        }
                     })
                     .collect()
             })
@@ -960,18 +971,6 @@ impl<'a> Lanes<'a> {
             .collect();
         let id = lo.map_or(k.1, |_| k.0);
         let mut derived = self.derived_phis.contains(&id);
-        // A register the console compiler holds a mask in on one path and a
-        // number it loads from memory on another (it reuses SGPRs freely)
-        // is not a lane mask where the paths meet: the code past the join
-        // reads it as a number (shader dbdbf36298727135: `s27`, a mask in
-        // two loops, a constant buffer dword past them).
-        let loaded = |v: Value| {
-            self.defs.get(&v).is_some_and(|&(b, i)| {
-                let n = p.blocks[b].insts[i].name();
-                n.starts_with("s_load_") || n.starts_with("s_buffer_load_")
-            })
-        };
-        let data = args.iter().any(|a| loaded(a.0) || loaded(a.1));
         // (edge condition, mask) per forward edge; back edges come later.
         let mut forward = Vec::new();
         for (n, &a) in args.iter().enumerate() {
@@ -984,9 +983,6 @@ impl<'a> Lanes<'a> {
             } else {
                 self.seen.push(a);
             }
-        }
-        if data && std::env::var_os("VICTORY_MIXED_PHI_MASKS").is_none() {
-            derived = false;
         }
         if forward.len() == args.len()
             && let Some(&(_, m)) = forward.first()
@@ -1206,9 +1202,7 @@ impl<'a> Lanes<'a> {
                         && let Some(k) = self.key(|r| inst.read(r), code)
                     {
                         let phi = self.phis.contains_key(&k.0) || self.phis.contains_key(&k.1);
-                        let known = self.masks.contains_key(&k);
-                        let by_phi = !known && phi && self.mask(k).1;
-                        takes_mask |= known || by_phi;
+                        takes_mask |= self.masks.contains_key(&k) || phi && self.mask(k).1;
                     }
                 }
                 let touches_exec =
@@ -1592,6 +1586,37 @@ mod tests {
         assert_eq!(s.guards[0][0], None, "the compare runs in every lane");
         let g = s.guards[0][1].expect("guard");
         assert!(matches!(s.bools.support(g)[..], [Atom::Lane(_)]));
+    }
+
+    #[test]
+    fn guards_follow_exec_and_block_reachability() {
+        let p = build(
+            &[
+                0x7DA4_0080, // v_cmpx_eq_u32 exec, 0, v0
+                0x7E02_0280, // v_mov_b32 v1, 0
+                0x7E04_0280, // v_mov_b32 v2, 0
+                0xBF88_0005, // s_cbranch_execz -> end
+                0x7E06_0280, // v_mov_b32 v3, 0
+                0x7DA4_0880, // v_cmpx_eq_u32 exec, 0, v4
+                0x7E06_0280, // v_mov_b32 v3, 0
+                0xBE82_0480, // s_mov_b64 s[2:3], 0
+                0x7E0A_0280, // v_mov_b32 v5, 0
+                S_ENDPGM,
+            ],
+            true,
+        );
+        let s = structure(&p).unwrap();
+        let lane = |block: usize, i: usize| {
+            Atom::Lane(p.blocks[block].insts[i].write(Reg::S(EXEC)).unwrap())
+        };
+        let a = s.guards[0][1].unwrap();
+        let b = s.guards[1][2].unwrap();
+        assert_eq!(s.bools.node(a), Some((lane(0, 0), Bool::FALSE, Bool::TRUE)));
+        assert_eq!(s.guards[0], [None, Some(a), Some(a), None]);
+        // The fallthrough already implies the first compare. Only the second
+        // compare needs testing, and the scalar move never needs a guard.
+        assert_eq!(s.bools.node(b), Some((lane(1, 1), Bool::FALSE, Bool::TRUE)));
+        assert_eq!(s.guards[1], [None, None, Some(b), None, Some(b)]);
     }
 
     #[test]

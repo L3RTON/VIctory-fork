@@ -29,7 +29,7 @@ pub static IID: Iid = guid(
 );
 
 /// The levels the device answers to, as on PC: `ID3D12Device1` to
-/// `ID3D12Device8`, and `ID3D12Device11`, which Grand Theft Auto VI creates
+/// `ID3D12Device8`, and `ID3D12Device11`, which the title creates
 /// its device as. Each level's table is the one before plus its methods.
 const LEVEL_IIDS: [Iid; 9] = [
     guid(
@@ -94,7 +94,7 @@ pub(crate) fn is_device(iid: *const Iid) -> bool {
 }
 
 /// The interface version these layouts were checked against (2.4). Both
-/// Minecraft (March 2022) and Grand Theft Auto VI (April 2026) pass it.
+/// Minecraft (March 2022) and the title (April 2026) pass it.
 pub const CHECKED_VERSION: u32 = 0x0002_0004;
 
 /// Feature level 12_2, what the console hardware supports.
@@ -160,7 +160,7 @@ pub extern "system" fn create(
 /// queues then have the newer layouts (two more methods each; see
 /// `list` and `queue`), although the interface version stays 2.4.
 /// shortcut: the creation interface is the only sign of the newer layouts
-/// we have (Grand Theft Auto VI, April 2026, versus Minecraft, March 2022);
+/// we have (the title, April 2026, versus Minecraft, March 2022);
 /// look for a better one if a title breaks the rule.
 static NEWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -346,7 +346,7 @@ fn feature_levels(data: *mut c_void) -> HRESULT {
     }
 }
 
-/// Device methods 0x1c8 and 0x218 (`SLOT`). Grand Theft Auto VI calls both
+/// Device methods 0x1c8 and 0x218 (`SLOT`). The title calls both
 /// (title+0x2477578 and title+0x24800d5) as `(this, description, interface
 /// id, out)`, asks for `ID3D12PipelineState`, and on success keeps the
 /// object `out` names and draws with it; on failure it goes without that
@@ -399,6 +399,19 @@ extern "system" fn unknown_pipeline<const SLOT: usize>(
     E_NOTIMPL
 }
 
+/// The host device's state: the console's device is removed when the host's is
+/// (VIctory 13185f5: the default answer, E_NOTIMPL, reads as a lost device).
+extern "system" fn removed_reason(_: This) -> HRESULT {
+    #[cfg(windows)]
+    if let Some(host) = crate::host::host() {
+        // SAFETY: a plain query.
+        if let Err(e) = unsafe { host.device.GetDeviceRemovedReason() } {
+            return e.code().0;
+        }
+    }
+    S_OK
+}
+
 /// IUnknown 3, object methods 4, device methods 76 (0x18-0x290), then the
 /// methods `ID3D12Device1` to `ID3D12Device8` add, in order: 3, 1, 3, 6, 9,
 /// 1, 2, 9 (0x298-0x3a0, the console's own among them), then those of
@@ -431,6 +444,7 @@ static FUNCTIONS: Table<160> = {
     f[28] = resource::create_heap as *const (); // 0xe0
     f[29] = resource::create_placed as *const (); // 0xe8
     f[36] = fence::create as *const (); // 0x120
+    f[37] = removed_reason as *const (); // 0x128
     f[38] = resource::copyable_footprints as *const (); // 0x130
     f[39] = query::create as *const (); // 0x138
     f[41] = signature::create as *const (); // 0x148
@@ -490,7 +504,7 @@ mod tests {
 
     #[test]
     fn newer_device_levels_are_the_same_device() {
-        // ID3D12Device11, as Grand Theft Auto VI asks for it.
+        // ID3D12Device11, as the title asks for it.
         let (hr, device) = create_as(&LEVEL_IIDS[8]);
         assert_eq!((hr, device), (S_OK, super::device()));
         let mut same = std::ptr::null();
