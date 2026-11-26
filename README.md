@@ -18,9 +18,9 @@ Tested on one machine only: Windows 11, Intel i9-12900K, 32 GB RAM DDR4, Nvidia 
 | Menus, videos, loading screens | 30 fps |
 | Prologue, indoors | 50-75 ms a frame (13-20 fps) |
 <s>| First mission with the boat | 46-53 ms (19-22 fps) |</s>
-<s>| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |<s>
-<s>| Outdoors on foot, the camp | 60-90 ms |<s>
-<s>| Flying | 42-57 ms |<s>
+<s>| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |</s>
+<s>| Outdoors on foot, the camp | 60-90 ms |</s>
+<s>| Flying | 42-57 ms |</s>
 | Longest session so far | 18 minutes, no crash |
 | Memory | 27-29 GB of private memory: **64 GB of RAM recommended** |
 
