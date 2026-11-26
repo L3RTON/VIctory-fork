@@ -1,8 +1,8 @@
-# VIctory on an RX 7900 XTX
+# VIctory on a 4070 Super
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
-This one is about **speed on AMD RDNA 3**: the world at 30 frames a second on
+This one is about **speed on 4070 Super**: the world at 10 frames a second on
 one PC, without giving up the picture. It is not there yet.
 
 **This repository contains no game files, code or assets.** You need your own
