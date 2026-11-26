@@ -244,6 +244,8 @@ fn viewable(format: i32) -> Option<i32> {
 
 /// The address of a texture: the base its descriptor has.
 fn texture_address(texture: &ID3D12Resource, desc: &D3D12_RESOURCE_DESC) -> Option<u64> {
+    // The heap is held only to keep it alive.
+    #[allow(dead_code)]
     struct Slot(ID3D12DescriptorHeap, usize);
     // SAFETY: a descriptor heap, used under the lock.
     unsafe impl Send for Slot {}
@@ -331,6 +333,35 @@ pub(crate) fn made(resource: &ID3D12Resource, what: impl FnOnce() -> String) {
     let now = crate::host::now_ms();
     let id = with(|b| b.add(raw, start, size.max(1), what, now));
     watch(&object, id);
+}
+
+/// For the memory line: the host objects alive by what they are (the name
+/// up to a size in it), the `n` that hold the most: how many, and their
+/// bytes. A run to the swamp (2026-11-26) had 13.7 GB of write-combined
+/// memory committed, 2.7 GB of it in memory, 8.2 GB of it in 130 blocks of
+/// 64 MB that no line of ours named.
+pub(crate) fn alive_by_name(n: usize) -> String {
+    if !on() {
+        return "(no book: VICTORY_D3D12_DRED)".into();
+    }
+    let groups: HashMap<String, (u64, u64)> = with(|b| {
+        let mut groups: HashMap<String, (u64, u64)> = HashMap::new();
+        for e in b.live.values() {
+            let key: String = e.what.split(" 0x").next().unwrap_or(&e.what).chars().take(48).collect();
+            let g = groups.entry(key).or_default();
+            g.0 += 1;
+            g.1 += e.size;
+        }
+        groups
+    });
+    let mut groups: Vec<(String, (u64, u64))> = groups.into_iter().collect();
+    groups.sort_by_key(|(_, (_, bytes))| std::cmp::Reverse(*bytes));
+    groups
+        .iter()
+        .take(n)
+        .map(|(what, (count, bytes))| format!("{what}: {count}, {} MB", bytes >> 20))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A block of texture memory, found by the texture `resource` at `offset` of it.

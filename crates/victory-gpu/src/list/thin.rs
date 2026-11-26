@@ -166,6 +166,12 @@ static READY: Mutex<VecDeque<Arc<Recording>>> = Mutex::new(VecDeque::new());
 static WORK: Condvar = Condvar::new();
 /// Lists of ours nobody uses, closed.
 static BACKS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// How many lists of ours nobody uses are kept (for the memory line).
+#[cfg(feature = "diagnostics")]
+pub(crate) fn backs_kept() -> usize {
+    held(&BACKS).len()
+}
 /// Since the last line of the log: streams handed over; calls translated and
 /// the microseconds that took (all threads), recordings translated, and
 /// recordings let go of in the middle.

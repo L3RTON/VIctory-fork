@@ -271,6 +271,12 @@ pub(crate) fn card_waited(us: u64, what: impl FnOnce() -> String) {
 /// bits for `both`. For timing only: without the waits a shader may read
 /// what another has not finished writing.
 pub(crate) fn barrier_test() -> u8 {
+    // `VICTORY_AB=<seconds>,VICTORY_BARRIER_TEST`: `groups`, in every other
+    // phase (the bounds of indirect commands keep their waits: without them
+    // a count not yet written could run away).
+    if let Some(on) = crate::ab::pick("VICTORY_BARRIER_TEST") {
+        return u8::from(on);
+    }
     static TEST: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *TEST.get_or_init(|| match std::env::var("VICTORY_BARRIER_TEST").as_deref() {
         Ok("groups") => 1,
@@ -791,6 +797,36 @@ fn log_memory() {
     {
         let [textures, staging] = crate::pool::memory();
         tracing::info!("memory in blocks (VICTORY_TEXTURE_POOL=0 turns them off): {textures} MB of textures, {staging} MB of their staging buffers");
+        let (held, free, resting, by) = crate::pool::texture_fill();
+        let (backs, idle, idle_mb) = crate::list::pools_now();
+        tracing::info!(
+            "memory, how full: textures hold {held} MB of the blocks, {free} MB free inside them (of it {resting} MB \
+             still resting); blocks empty {}, under a quarter full {}, under half {}, under three quarters {}, \
+             fuller {}; host lists kept idle: {idle} ({idle_mb} MB of scratch), lists of ours kept for \
+             recordings: {backs}, preludes kept: {}; emptying (VICTORY_POOL_COMPACT=1) since the start: blocks \
+             picked {}, emptied and let go {}, given up on {}, host copies taken out to be made again elsewhere {} \
+             ({} MB), copies made in place of another whose whole upload was recorded {}; copies found in blocks \
+             being emptied that stayed (at every look): the host's own contents {}, not placed {}, held by a list {}, \
+             twin, levels on demand, alias or replaced {}, title memory not all mapped {}",
+            by[0],
+            by[1],
+            by[2],
+            by[3],
+            by[4],
+            crate::host::preludes_now(),
+            crate::pool::PICKED.load(Relaxed),
+            crate::pool::DRAINED.load(Relaxed),
+            crate::pool::GIVEN_UP.load(Relaxed),
+            crate::resource::MOVED[0].load(Relaxed),
+            crate::resource::MOVED[1].load(Relaxed) >> 20,
+            crate::resource::GROWN_FILLED.load(Relaxed),
+            crate::resource::STAYED[0].load(Relaxed),
+            crate::resource::STAYED[1].load(Relaxed),
+            crate::resource::STAYED[2].load(Relaxed),
+            crate::resource::STAYED[3].load(Relaxed),
+            crate::resource::STAYED[4].load(Relaxed),
+        );
+        tracing::info!("memory, host objects alive by what they are: {}", crate::book::alive_by_name(14));
     }
     let targets = crate::resource::targets_census();
     tracing::info!(

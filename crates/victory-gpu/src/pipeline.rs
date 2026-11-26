@@ -130,6 +130,7 @@ pub(crate) struct Translated {
     /// A compute program's threads in a group.
     pub(crate) threads: Option<[u32; 3]>,
     pub(crate) used: Vec<victory_shader::UsedResource>,
+    pub(crate) tables: crate::draw::TablePlan,
     /// Whether the shader's code can store to buffer memory ([`stores`]);
     /// true when its code is not known.
     pub(crate) stores: bool,
@@ -157,48 +158,6 @@ impl Shader {
                     let _ = std::fs::write(dir.join(format!("{stem}.cdxil")), &self.container);
                     if let Ok(t) = &done {
                         let _ = std::fs::write(dir.join(format!("{stem}.dxil")), &t.host.dxil);
-                    }
-                }
-                // Diagnostics: the programs of the title's reflections, by
-                // name, with what they read and write (a stand-in for the
-                // rays they trace, as `crate::ambient` has for the light).
-                #[cfg(feature = "diagnostics")]
-                if let Ok(t) = &done {
-                    const NAMES: [&[u8]; 8] = [
-                        b"CS_CombinedReflections",
-                        b"CS_ResolveScreenSpace_GBufferSSR",
-                        b"CS_RayPrePass_",
-                        b"_SkyProbe",
-                        b"CS_PPR_",
-                        b"CS_ResolveToMirrorGBuffer",
-                        b"CS_SortRayTiles",
-                        b"ReflectiveCaustics",
-                    ];
-                    let c = &self.container;
-                    if let Some(at) = NAMES.iter().find_map(|n| c.windows(n.len()).position(|w| w == *n)) {
-                        let from = c[..at].iter().rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_')).map_or(0, |p| p + 1);
-                        let to = c[at..].iter().position(|b| !(b.is_ascii_alphanumeric() || *b == b'_')).map_or(c.len(), |p| at + p);
-                        let name = String::from_utf8_lossy(&c[from..to]);
-                        let used: Vec<String> = t
-                            .used
-                            .iter()
-                            .map(|u| format!("{:?}/{:?} slot {} dw {} reg {}", u.kind, u.root, u.slot, u.table_offset_dwords, u.lower_bound))
-                            .collect();
-                        tracing::info!(hash = %self.hash, threads = ?t.threads, "a reflection program: {name}; uses {used:?}");
-                    }
-                }
-                // Diagnostics: every program's name (`VICTORY_PROGRAM_NAMES=1`).
-                #[cfg(feature = "diagnostics")]
-                if std::env::var_os("VICTORY_PROGRAM_NAMES").is_some_and(|v| v == "1") {
-                    let c = &self.container;
-                    let found = [&b"CS_"[..], b"PS_", b"VS_", b"MS_", b"AS_"].iter().find_map(|n| {
-                        c.windows(3).enumerate().find(|(i, w)| {
-                            *w == *n && (*i == 0 || !(c[i - 1].is_ascii_alphanumeric() || c[i - 1] == b'_'))
-                        }).map(|(i, _)| i)
-                    });
-                    if let Some(at) = found {
-                        let to = c[at..].iter().position(|b| !(b.is_ascii_alphanumeric() || *b == b'_')).map_or(c.len(), |p| at + p);
-                        tracing::info!(hash = %self.hash, stage = %self.stage, "a program by name: {}", String::from_utf8_lossy(&c[at..to]));
                     }
                 }
                 if let Ok(t) = &done {
@@ -264,10 +223,12 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         })
         .map(|p| p.used)
         .unwrap_or_default();
+    let tables = crate::draw::TablePlan::new(&used, &host.root_indexed_views);
     Ok(Translated {
         host,
         threads,
         used,
+        tables,
         stores,
         stores_by_address,
         picks: Default::default(),

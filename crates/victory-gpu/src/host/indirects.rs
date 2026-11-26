@@ -11,6 +11,9 @@
 //! has before it. Nothing is kept without device-removed data.
 //! `VICTORY_D3D12_DRED=faults` and no data at all: nothing is noted.
 
+// Used only by the diagnostics build (the device-removed report).
+#![cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

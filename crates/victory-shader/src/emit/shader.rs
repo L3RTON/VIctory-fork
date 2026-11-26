@@ -24,6 +24,11 @@ pub const ROOT_CBV_SPACE: u32 = 1;
 /// root SRV also tells the host that the buffer views of the whole heap
 /// must be ready when it runs, not only those its tables name.
 pub const SLOT_STRIDES: u8 = 255;
+/// The same table of strides and format kinds as [`SLOT_STRIDES`], bound for
+/// shaders that only inspect views from descriptor tables (`RootType::Table`).
+/// Kept distinct from [`SLOT_STRIDES`] so the host binds the table without
+/// running the full bindless heap buffer sweep.
+pub const SLOT_TABLE_STRIDES: u8 = 252;
 /// The bits of a [`SLOT_STRIDES`] dword that hold the stride.
 pub const VIEW_STRIDE_BITS: u32 = (1 << 30) - 1;
 /// In a [`SLOT_STRIDES`] dword: a typed buffer view of an integer format
@@ -94,29 +99,6 @@ pub const USER_ROOT_ADDRESS: u32 = 0x104;
 /// the group's width. Asked for by the structure builder's programs
 /// ([`crate::spill::is_spilled`]).
 pub const USER_DISPATCH_THREADS_X: u32 = 0x106;
-/// `RootType::Other` code of a user-data dword the host computes: the view
-/// heap index of the constant buffer view at dword `dword` of the
-/// descriptor table of root parameter `slot`. A shader reads a constant
-/// buffer of a table at a fixed place through it ([`cbv_split`]), so the
-/// host makes one slot for it per draw instead of the whole table afresh.
-pub const USER_CBV_SLOT: u32 = 0x107;
-
-/// Whether constant buffers read out of descriptor tables at fixed places
-/// go through [`USER_CBV_SLOT`]: on a host whose view heaps are capped
-/// below the title's (NVIDIA: 1,000,000 views), where whole tables made
-/// afresh for their constant buffers ran the dynamic slots out (2,600
-/// tables a frame refused, their draws dropped). `VICTORY_CBV_SPLIT=1` or
-/// `0` sets it on any host.
-pub fn cbv_split() -> bool {
-    match std::env::var("VICTORY_CBV_SPLIT").ok().as_deref() {
-        Some("1") => true,
-        Some("0") => false,
-        _ => {
-            let limit = view_heap_limit();
-            limit != 0 && limit < 1_000_000
-        }
-    }
-}
 
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {

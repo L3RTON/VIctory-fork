@@ -283,9 +283,7 @@ pub(super) fn to_desc(d: &wire::Desc) -> D3D12_RESOURCE_DESC {
             Quality: d.samples[1],
         },
         Layout: D3D12_TEXTURE_LAYOUT(d.layout),
-        // (Cross-adapter: the replay's heaps are not shared; NVIDIA refuses it
-        // on them, where the title's were opened from existing memory.)
-        Flags: D3D12_RESOURCE_FLAGS(d.flags & !0x10),
+        Flags: D3D12_RESOURCE_FLAGS(d.flags),
     }
 }
 

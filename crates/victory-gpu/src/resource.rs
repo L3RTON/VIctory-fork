@@ -2179,6 +2179,132 @@ pub(crate) fn let_go_idle() {
 #[cfg(windows)]
 pub(crate) static SWEPT_US: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 
+/// Since the start: host copies taken out of blocks being emptied to be
+/// made again elsewhere ([`move_from_draining`]), and their bytes.
+#[cfg(windows)]
+pub(crate) static MOVED: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// Since the start, at each look of [`move_from_draining`]: host copies
+/// found in a block being emptied that stayed, by why: the host's own
+/// contents (a target, or written by a copy); not a placed texture (no slot
+/// is made again for it); held by a list; a twin, levels on demand, an
+/// alias or a copy already replaced; title memory not all mapped.
+#[cfg(windows)]
+pub(crate) static STAYED: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+
+/// Since the start: host copies made in place of another (with more
+/// levels, or moved out of a block being emptied) whose first whole upload
+/// was recorded, after which the slots showing the old one are made again.
+#[cfg(windows)]
+pub(crate) static GROWN_FILLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Empties the blocks of textures the pool is emptying
+/// (`VICTORY_POOL_COMPACT=1`, `crate::pool::drain_plan`): the host copies
+/// of placed textures the title fills that lie in them are taken out as
+/// [`want_level`] takes out one with fewer levels. The next texture pass
+/// makes their slots due (`crate::descriptor::host::moved`) and the copy
+/// anew, which the pool cuts from a block it is not emptying; the slots go
+/// on showing the old copy (they keep it) until the new one's upload has
+/// run, and are made from the new one then
+/// (`crate::descriptor::host::levels_changed_after`); a draw that reads
+/// one through a table makes and fills it as its first use. The old copy
+/// goes when nothing holds it, and its block when it is empty.
+///
+/// Only copies no list holds (a list kept and run again would go on naming
+/// the old one), whose title memory is all mapped (the new one is filled
+/// from it), that the host never wrote (their contents are the host's), and
+/// with no twin and no alias. A part of the textures at each look, the next
+/// part at the next ([`let_go_idle`] does the same), and at most
+/// `MOST` copies and `MOST_BYTES` a look: each is uploaded again. Called
+/// before a submission starts, by the thread that submits.
+#[cfg(windows)]
+pub(crate) fn move_from_draining() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const MOST: u64 = 384;
+    const MOST_BYTES: u64 = 128 << 20;
+    const PART: usize = 16384;
+    static FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let draining = crate::pool::drain_plan();
+    if !draining.contains(&true) {
+        return;
+    }
+    let (mut moved, mut bytes) = (0u64, 0u64);
+    let mut starts = Vec::new();
+    {
+        let all = textures();
+        let mut looked = 0;
+        // Where the next look begins: here again if this one stops short.
+        let mut next = 0;
+        for &at in all.range(FROM.load(Relaxed)..) {
+            if looked == PART || moved >= MOST || bytes >= MOST_BYTES {
+                next = at;
+                break;
+            }
+            looked += 1;
+            // SAFETY: as in `let_go_idle`.
+            let r = unsafe { &*(at as *const Resource) };
+            let mut made = r.host.made.lock().unwrap_or_else(|e| e.into_inner());
+            let Some((host, twin)) = made.as_ref() else {
+                continue;
+            };
+            let Some(block) = crate::pool::block_of(&host.texture) else {
+                continue;
+            };
+            if !draining.get(block).copied().unwrap_or(false) {
+                continue;
+            }
+            // Why a copy in a block being emptied stays there ([`STAYED`]).
+            let why = if !fills(&r.desc) || crate::texture::host_wrote(at) {
+                1
+            } else if !r.host.placed.load(Relaxed) {
+                2
+            } else if std::sync::Arc::strong_count(host) != 1 {
+                3
+            } else if twin.is_some()
+                || host.tiled.is_some()
+                || host.grown.load(Relaxed)
+                || r.host.grown.load(Relaxed)
+                || alias_of(at as This).is_some()
+            {
+                4
+            } else {
+                let whole = footprint(&r.desc).map_or(0, |f| f.size);
+                if whole == 0 || !crate::texture::committed(r.data().cast_const(), whole as usize) { 5 } else { 0 }
+            };
+            if why != 0 {
+                STAYED[why - 1].fetch_add(1, Relaxed);
+                continue;
+            }
+            let b = host.bytes;
+            // Under the lock, as in `want_level`.
+            crate::texture::unstage(at as This);
+            r.host.grown.store(true, Relaxed);
+            if let Some(old) = made.take() {
+                REPLACED.lock().unwrap_or_else(|e| e.into_inner()).push((crate::host::moment(), old));
+            }
+            starts.push(r.data() as u64);
+            moved += 1;
+            bytes += b;
+        }
+        FROM.store(next, Relaxed);
+    }
+    // (With no lock of ours held.)
+    for start in starts {
+        crate::descriptor::host::moved(start);
+    }
+    if moved > 0 {
+        let before = MOVED[0].fetch_add(moved, Relaxed);
+        MOVED[1].fetch_add(bytes, Relaxed);
+        if before == 0 {
+            tracing::info!(
+                moved,
+                kib = bytes >> 10,
+                "texture blocks being emptied (VICTORY_POOL_COMPACT=1): the first host copies taken out to be made again elsewhere"
+            );
+        }
+    }
+}
+
 /// For the memory line: the host copies the sweep never lets go
 /// ([`let_go_idle`] takes only copies of textures the title fills that the
 /// host never copied into), by what would say they are dead weight. A
@@ -2416,6 +2542,14 @@ pub(crate) fn host_resource<'a>(
     Some(unsafe { &*std::ptr::from_ref(&host.texture) })
 }
 
+/// Whether `this` is a valid title resource created by this runtime.
+#[cfg(windows)]
+pub(crate) fn is_resource(this: This) -> bool {
+    let mut table = [0; size_of::<usize>()];
+    crate::host::read_into(this.cast(), &mut table)
+        && usize::from_ne_bytes(table) == RESOURCE_FUNCTIONS.0.as_ptr() as usize
+}
+
 /// A title texture's host copy, shared, for a list to hold.
 #[cfg(windows)]
 pub(crate) fn host_copy(this: This) -> Option<std::sync::Arc<HostTexture>> {
@@ -2562,6 +2696,7 @@ fn host_texture_as(
         }
     };
     if let Err(e) = &made {
+        crate::residency::allocation_error(&e);
         tracing::warn!(error = %e, desc = ?d, reserved, "no host texture");
     }
     if !reserved
@@ -2982,6 +3117,7 @@ static PLACED_TWINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 /// See [`PLACED_TWINS`].
 #[cfg(windows)]
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
 pub(crate) fn placed_filler_twins() -> u64 {
     PLACED_TWINS.load(std::sync::atomic::Ordering::Relaxed)
 }
