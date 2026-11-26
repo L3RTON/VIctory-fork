@@ -1,21 +1,8 @@
-# VIctory on an RX 7900 XTX
-
-## Run the codec_d Windows build
-
-Download and extract the Windows x64 ZIP from the [private releases](https://github.com/codec-d/cool_fox/releases/latest). Open PowerShell in the extracted folder and point the launcher at your own complete Xbox dump.
-
-```powershell
-$env:VICTORY_GAME_DIR = 'D:\Games\MyDump'
-.\Play-VIctory.cmd pareto-residency
-```
-
-The launcher selects Series S and the RTX-tested residency settings. It builds its shader cache locally under `%LOCALAPPDATA%\VIctory\cache-pareto`. Set `VICTORY_CACHE_DIR` to reuse an existing cache outside the checkout. Windows x64, an AVX2 CPU, and a Direct3D 12 GPU with shader model 6.6 and mesh shader support are required.
-
-To build from this checkout, install the pinned Rust toolchain and the MSVC C++ build tools with a Windows SDK, then run `cargo build --release --locked -p victory`. The same launcher finds `target\release\victory.exe`. The sections below describe the upstream AMD fork and its separate launcher.
+# VIctory on a 4070 Super
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
-This one is about **speed on AMD RDNA 3**: the world at 30 frames a second on
+This one is about **speed on 4070 Super**: the world at 10 frames a second on
 one PC, without giving up the picture. It is not there yet.
 
 **This repository contains no game files, code or assets.** You need your own
@@ -24,19 +11,14 @@ or publisher.
 
 ## Where it stands (2026-11-25)
 
-Tested on one machine only: Windows 11, Intel i9-12900K, 64 GB RAM, Radeon
-RX 7900 XTX, 1440p, the Series X profile.
+Tested on one machine only: Windows 11, Intel i9-12900K, 32 GB RAM DDR4, Nvidia 4070 Super, 1440p, the Series X profile.
 
 | | |
 |---|---|
 | Menus, videos, loading screens | 30 fps |
 | Prologue, indoors | 50-75 ms a frame (13-20 fps) |
-| First mission with the boat | 46-53 ms (19-22 fps) |
-| Street chase with many cars and people | 100-165 ms (6-10 fps), single frames far longer |
-| Outdoors on foot, the camp | 60-90 ms |
-| Flying | 42-57 ms |
-| Longest session so far | 41 minutes, no crash |
-| Memory | 40-46 GB of private memory: **64 GB of RAM recommended** |
+| Longest session so far | 18 minutes, no crash |
+| Memory | 27-29 GB of private memory: **64 GB of RAM recommended** |
 
 It started at 280 ms a frame in the same scenes two days earlier.
 
@@ -107,7 +89,7 @@ commits taken from elsewhere name the commit and its author.
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors: the loader, the runtime services, the Direct3D 12 back end and
   the shader recompiler.
-- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)**: the fork
+- **[VIctory-7900XTX](https://github.com/DexNom/VIctory)** by DexNom. the fork
   this one started from, and the people whose pull requests it carries.
 - **[DexNom/VIctory](https://github.com/DexNom/VIctory)**: ray tracing fixes,
   cube gradients, sparse textures.
